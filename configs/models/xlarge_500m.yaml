@@ -1,0 +1,117 @@
+model_architecture:
+  name: "xlarge-500m-transformer"
+  version: "1.0.0"
+  parameter_count: 500000000
+  architecture_family: "decoder-only-transformer"
+  dimensions:
+    embedding_dimension: 1280
+    attention_head_count: 20
+    transformer_layer_count: 28
+    feed_forward_dimension: 5120
+    vocabulary_size: 50000
+    maximum_sequence_length: 2048
+  architecture_features:
+    use_rotary_position_embeddings: true
+    use_grouped_query_attention: true
+    grouped_query_kv_head_count: 5
+    use_flash_attention: true
+    use_rms_normalization: true
+    use_swiglu_activation: true
+  regularization:
+    dropout_probability: 0.1
+  optimization:
+    enable_gradient_checkpointing: true
+    enable_model_compilation: false
+
+training_configuration:
+  optimizer:
+    learning_rate: 0.0002
+    weight_decay_coefficient: 0.1
+    gradient_clipping_threshold: 1.0
+    optimizer_beta1: 0.9
+    optimizer_beta2: 0.95
+  learning_rate_schedule:
+    warmup_steps_count: 4000
+    total_training_steps: 90000
+  batch_configuration:
+    batch_size_per_device: 2
+    gradient_accumulation_steps: 16
+    target_effective_batch_size: 256
+  duration:
+    total_training_steps: 90000
+    early_stopping_patience: 5
+  monitoring:
+    evaluation_interval_steps: 1000
+    checkpoint_save_interval_steps: 4000
+    logging_interval_steps: 50
+  checkpoint_management:
+    checkpoint_directory: "./models/checkpoints"
+    keep_last_n_checkpoints: 3
+    keep_best_checkpoint: true
+  data_loading:
+    num_workers: 4
+    prefetch_factor: 2
+    pin_memory: true
+    persistent_workers: true
+
+dataset_configuration:
+  training_dataset:
+    name: "Skylion007/openwebtext"
+    cache_directory: "./data/cache"
+    processed_directory: "./data/processed"
+  preprocessing:
+    maximum_sequence_length: 2048
+  split_ratios:
+    train: 0.95
+    validation: 0.05
+    test: 0.0
+
+infrastructure_configuration:
+  compute:
+    target_device: "cuda"
+    enable_mixed_precision: true
+  modal_gpu:
+    gpu_type: "H100"
+
+budget_configuration:
+  monthly_budget_usd: 140.0
+  safety_margin_percentage: 90
+  training_phases:
+    phase_1_foundation:
+      dataset: "roneneldan/TinyStories"
+      gpu_type: "A10G"
+      training_steps: 20000
+      estimated_cost_usd: 6.0
+      description: "Foundation stage"
+    phase_2_expansion:
+      dataset: "Skylion007/openwebtext"
+      gpu_type: "H100"
+      training_steps: 45000
+      estimated_cost_usd: 32.0
+      description: "High-throughput expansion stage"
+    phase_3_specialization:
+      dataset: "codeparrot/github-code"
+      gpu_type: "H100"
+      training_steps: 20000
+      estimated_cost_usd: 14.0
+      description: "Large-model specialization stage"
+
+monitoring_configuration:
+  logging:
+    log_directory: "./logs"
+  metrics:
+    enable_tensorboard: true
+    enable_wandb: false
+
+inference_configuration:
+  generation:
+    default_max_new_tokens: 512
+    default_temperature: 0.8
+    default_top_k: 50
+    default_top_p: 0.95
+    default_repetition_penalty: 1.05
+
+metadata:
+  configuration_version: "2.0.0"
+  profile: "xlarge_500m"
+  purpose: "Highest-capacity profile for H100-backed training"

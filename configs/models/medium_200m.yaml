@@ -1,0 +1,117 @@
+model_architecture:
+  name: "medium-200m-transformer"
+  version: "1.0.0"
+  parameter_count: 200000000
+  architecture_family: "decoder-only-transformer"
+  dimensions:
+    embedding_dimension: 768
+    attention_head_count: 12
+    transformer_layer_count: 16
+    feed_forward_dimension: 3072
+    vocabulary_size: 50000
+    maximum_sequence_length: 1024
+  architecture_features:
+    use_rotary_position_embeddings: true
+    use_grouped_query_attention: true
+    grouped_query_kv_head_count: 4
+    use_flash_attention: true
+    use_rms_normalization: true
+    use_swiglu_activation: true
+  regularization:
+    dropout_probability: 0.1
+  optimization:
+    enable_gradient_checkpointing: true
+    enable_model_compilation: false
+
+training_configuration:
+  optimizer:
+    learning_rate: 0.0003
+    weight_decay_coefficient: 0.1
+    gradient_clipping_threshold: 1.0
+    optimizer_beta1: 0.9
+    optimizer_beta2: 0.95
+  learning_rate_schedule:
+    warmup_steps_count: 2000
+    total_training_steps: 50000
+  batch_configuration:
+    batch_size_per_device: 8
+    gradient_accumulation_steps: 4
+    target_effective_batch_size: 256
+  duration:
+    total_training_steps: 50000
+    early_stopping_patience: 5
+  monitoring:
+    evaluation_interval_steps: 500
+    checkpoint_save_interval_steps: 2000
+    logging_interval_steps: 50
+  checkpoint_management:
+    checkpoint_directory: "./models/checkpoints"
+    keep_last_n_checkpoints: 3
+    keep_best_checkpoint: true
+  data_loading:
+    num_workers: 4
+    prefetch_factor: 2
+    pin_memory: true
+    persistent_workers: true
+
+dataset_configuration:
+  training_dataset:
+    name: "Skylion007/openwebtext"
+    cache_directory: "./data/cache"
+    processed_directory: "./data/processed"
+  preprocessing:
+    maximum_sequence_length: 1024
+  split_ratios:
+    train: 0.95
+    validation: 0.05
+    test: 0.0
+
+infrastructure_configuration:
+  compute:
+    target_device: "cuda"
+    enable_mixed_precision: true
+  modal_gpu:
+    gpu_type: "A100-40GB"
+
+budget_configuration:
+  monthly_budget_usd: 40.0
+  safety_margin_percentage: 90
+  training_phases:
+    phase_1_foundation:
+      dataset: "roneneldan/TinyStories"
+      gpu_type: "A10G"
+      training_steps: 15000
+      estimated_cost_usd: 4.4
+      description: "Foundation model on simple data"
+    phase_2_expansion:
+      dataset: "Skylion007/openwebtext"
+      gpu_type: "A100-40GB"
+      training_steps: 25000
+      estimated_cost_usd: 12.5
+      description: "Expand language and factual coverage"
+    phase_3_specialization:
+      dataset: "codeparrot/github-code"
+      gpu_type: "A100-40GB"
+      training_steps: 10000
+      estimated_cost_usd: 5.0
+      description: "Domain specialization"
+
+monitoring_configuration:
+  logging:
+    log_directory: "./logs"
+  metrics:
+    enable_tensorboard: true
+    enable_wandb: false
+
+inference_configuration:
+  generation:
+    default_max_new_tokens: 512
+    default_temperature: 0.8
+    default_top_k: 50
+    default_top_p: 0.95
+    default_repetition_penalty: 1.05
+
+metadata:
+  configuration_version: "2.0.0"
+  profile: "medium_200m"
+  purpose: "Balanced production profile for Modal GPU training"

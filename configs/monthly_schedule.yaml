@@ -1,0 +1,104 @@
+# Monthly Training Schedule Configuration
+
+# This configuration defines automated monthly model upgrades
+# Budget: $30/month Modal credits
+# Strategy: Progressive training with different datasets each month
+
+schedule:
+  # Cron schedule: First day of each month at 2 AM UTC
+  cron: "0 2 1 * *"
+  timezone: "UTC"
+  
+  # Budget management
+  monthly_budget: 30.00  # USD
+  safety_margin: 0.90    # Stop at 90% of budget
+  
+  # Training phases (executed in order each month)
+  phases:
+    - name: "base_training"
+      dataset: "roneneldan/TinyStories"
+      gpu: "A10G"
+      max_steps: 20000
+      estimated_cost: 3.30
+      description: "Foundation model training"
+      config: "efficient"  # 45M params
+      
+    - name: "expansion_training"
+      dataset: "openwebtext"
+      gpu: "A100"
+      max_steps: 40000
+      estimated_cost: 12.00
+      inherit_weights: true
+      description: "Expand to balanced config"
+      config: "balanced"  # 85M params - UPGRADE HERE!
+      model_expansion: true  # Signal to expand model dimensions
+      
+    - name: "specialization_training"
+      dataset: "custom_domain"  # Your monthly rotating dataset
+      gpu: "A100"
+      max_steps: 30000
+      estimated_cost: 9.00
+      inherit_weights: true  # Load from previous phase
+      description: "Domain-specific fine-tuning"
+      config: "balanced"  # Keep 85M params
+  
+  # Monthly rotating datasets (cycles through these)
+  rotating_datasets:
+    month_1: "wikipedia"
+    month_2: "bookcorpus"
+    month_3: "github_code"
+    month_4: "scientific_papers"
+    month_5: "news_articles"
+    month_6: "conversational_data"
+    month_7: "technical_docs"
+    month_8: "legal_documents"
+    month_9: "medical_texts"
+    month_10: "financial_reports"
+    month_11: "social_media"
+    month_12: "creative_writing"
+
+# Model versioning
+versioning:
+  format: "v{year}.{month}.{day}"  # e.g., v2025.02.01
+  keep_last_n_models: 3  # Keep last 3 monthly models
+  archive_location: "s3://models-archive/"  # Optional cloud backup
+
+# Notifications
+notifications:
+  enabled: true
+  channels:
+    - type: "slack"
+      webhook_url: "${SLACK_WEBHOOK_URL}"
+    - type: "email"
+      recipients: ["your-email@example.com"]
+  
+  events:
+    - "training_started"
+    - "phase_completed"
+    - "training_completed"
+    - "budget_warning"  # At 75% and 90%
+    - "training_failed"
+
+# Quality gates
+quality_gates:
+  min_validation_improvement: 0.05  # Must improve by 5%
+  max_validation_loss: 3.0
+  rollback_on_failure: true  # Rollback to previous model if worse
+
+# Deployment
+auto_deploy:
+  enabled: true
+  environments:
+    - name: "staging"
+      kubernetes_context: "staging-cluster"
+      auto_promote: true  # Auto-promote to production if tests pass
+    - name: "production"
+      kubernetes_context: "production-cluster"
+      require_approval: false  # Set true for manual approval
+
+# Resource optimization
+optimization:
+  auto_batch_size: true
+  mixed_precision: true
+  gradient_checkpointing: false  # Enable for very large models
+  compile_model: true  # PyTorch 2.0 compilation

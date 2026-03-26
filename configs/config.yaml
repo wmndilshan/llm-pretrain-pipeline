@@ -1,0 +1,89 @@
+# Training Pipeline Configuration
+
+# Dataset Configuration
+dataset:
+  name: "roneneldan/TinyStories"  # HuggingFace dataset name or local path
+  split_ratios:
+    train: 0.9
+    validation: 0.05
+    test: 0.05
+  max_seq_length: 256
+  max_samples: 100000  # Limit samples (null for all). More samples = better training, less overfitting
+  cache_dir: "./data/cache"
+  processed_dir: "./data/processed"
+  tokenizer_backend: "manager"
+  
+# Model Configuration
+model:
+  # Architecture selection: "base", "enhanced", or "professional"
+  architecture: "enhanced"
+
+  # Common parameters
+  vocab_size: 10000
+  d_model: 384
+  num_heads: 6
+  num_layers: 6
+  d_ff: 1536
+  dropout: 0.1
+  max_seq_length: 256
+
+  # Model versioning (keeps old best_model.pt as best_model_v1.pt, v2, etc.)
+  version_models: true
+
+  # Enhanced model options (only used when architecture: "enhanced")
+  enhanced:
+    use_rotary_embeddings: true   # RoPE (better than absolute position embeddings)
+    use_flash_attention: true      # 2-3x faster attention
+    use_grouped_query_attention: true  # 2x faster inference
+    gqa_num_kv_heads: 2           # Number of KV heads for GQA
+    use_rms_norm: true            # Faster than LayerNorm
+    use_swiglu: true              # Better than ReLU
+    gradient_checkpointing: false  # Trade compute for memory
+  
+# Training Configuration
+training:
+  batch_size: 64
+  learning_rate: 3.0e-4
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  warmup_steps: 1000
+  max_steps: 50000
+  eval_interval: 500
+  save_interval: 1000
+  log_interval: 10
+  
+# Checkpoint Configuration
+checkpoint:
+  save_dir: "./models/checkpoints"
+  keep_last_n: 3  # Keep only last N checkpoints
+  keep_best: true  # Always keep best checkpoint
+  resume_from_latest: true
+
+# Transfer Learning Configuration
+transfer_learning:
+  enabled: true  # Enable multi-dataset training with weight transfer
+  save_dir: "./models/transfer_learning"  # Directory for transfer learning models
+  force_retrain: false  # Force retrain even if dataset was already trained
+  
+# Hardware Configuration
+hardware:
+  device: "cuda"  # cuda, cpu, or mps
+  mixed_precision: true
+  num_workers: 4
+  pin_memory: true
+  modal_gpu: "A10G"  # Modal GPU: T4, A10G, A100-40GB, A100-80GB, H100
+
+# Budget Configuration
+budget:
+  monthly_limit: 30.0  # Monthly spending limit in USD
+  safety_margin: 0.9   # Only use 90% of budget for safety
+  
+# Logging Configuration
+logging:
+  log_dir: "./logs"
+  tensorboard: true
+  wandb: false
+  wandb_project: "llm_training"
+  wandb_entity: null

@@ -1,0 +1,62 @@
+# Initial training config - good first run on Modal GPU
+# Dataset: TinyStories (small, fast, no auth required)
+# Run: modal run src/modal_training.py --config configs/initial_training.yaml --steps 5000
+
+dataset:
+  name: "roneneldan/TinyStories"
+  max_samples: 50000   # fast first run; remove or set null for full
+  split_ratios:
+    train: 0.9
+    validation: 0.05
+    test: 0.05
+  max_seq_length: 256
+  cache_dir: "./data/cache"
+  processed_dir: "./data/processed"
+
+model:
+  vocab_size: 10000
+  d_model: 384
+  num_heads: 6
+  num_layers: 6
+  d_ff: 1536
+  dropout: 0.1
+  max_seq_length: 256
+
+training:
+  batch_size: 64
+  learning_rate: 3.0e-4
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  warmup_steps: 500
+  max_steps: 5000   # Quick first run (~$3-5 on A10G)
+  eval_interval: 250
+  save_interval: 500
+  log_interval: 10
+
+checkpoint:
+  save_dir: "./models/checkpoints"
+  keep_last_n: 2
+  keep_best: true
+  resume_from_latest: true
+
+hardware:
+  device: "cuda"
+  mixed_precision: true
+  compile_model: false
+  num_workers: 4
+  pin_memory: true
+  modal_gpu: "A10G"
+
+budget:
+  monthly_limit: 30.0
+  safety_margin: 0.9
+  warn_at_percent: 80
+
+logging:
+  log_dir: "./logs"
+  tensorboard: true
+  wandb: false
+  wandb_project: "llm-training"
+  wandb_entity: null

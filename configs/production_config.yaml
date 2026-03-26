@@ -1,0 +1,85 @@
+# Production-Ready Optimized Configuration
+# Balanced 85M parameter model - Best for $30/month budget
+
+dataset:
+  name: "roneneldan/TinyStories"
+  split_ratios:
+    train: 0.9
+    validation: 0.05
+    test: 0.05
+  max_seq_length: 512        # Doubled for better context
+  cache_dir: "./data/cache"
+  processed_dir: "./data/processed"
+
+model:
+  vocab_size: 32000          # Optimized vocabulary size
+  d_model: 512               # Main model dimension
+  num_heads: 8               # 64-dim per head (optimal)
+  num_layers: 8              # Good depth
+  d_ff: 2048                 # 4x expansion in FFN
+  dropout: 0.1
+  max_seq_length: 512
+  
+  # Modern architecture features
+  use_enhanced_model: true   # Use EnhancedGPTModel
+  use_rotary_embeddings: true
+  use_flash_attention: true
+  use_grouped_query_attention: true
+  gqa_num_kv_heads: 2        # For faster inference
+  use_rms_norm: true
+  use_swiglu: true
+  
+training:
+  # Optimizer (AdamW with 8-bit for memory efficiency)
+  batch_size: null           # Auto-optimized
+  learning_rate: 6.0e-4      # Scaled for model size
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95                # Lower β2 for better convergence
+  grad_clip: 1.0
+  
+  # Learning rate schedule
+  warmup_steps: 2000         # 2% warmup
+  max_steps: 100000          # Full training
+  lr_schedule: "cosine"
+  min_lr_ratio: 0.1
+  
+  # Logging and evaluation
+  eval_interval: 1000
+  save_interval: 5000
+  log_interval: 100
+  
+  # Advanced optimizations
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: false  # Only enable for very large models
+
+checkpoint:
+  save_dir: "./models/checkpoints"
+  keep_last_n: 3
+  keep_best: true
+  resume_from_latest: true
+
+hardware:
+  device: "cuda"
+  mixed_precision: true      # Essential for speed
+  num_workers: 4
+  pin_memory: true
+  modal_gpu: "A100"
+
+logging:
+  log_dir: "./logs"
+  tensorboard: true
+  wandb: false
+  wandb_project: null
+  wandb_entity: null
+
+# Performance estimates for this config
+estimates:
+  parameters: "85M"
+  training_time_a100: "~33 hours"
+  training_cost: "$99 (or $24.30 in 3 monthly phases)"
+  inference_speed_a100_gpu: "15-20 tokens/sec"
+  inference_speed_cpu_quantized: "2-3 tokens/sec"
+  expected_perplexity: "15-20"
+  model_size_fp32: "340 MB"
+  model_size_int8: "85 MB"

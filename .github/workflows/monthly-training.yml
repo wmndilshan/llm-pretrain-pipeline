@@ -1,0 +1,424 @@
+name: Monthly Model Training & Deployment
+
+# Triggers:
+# 1. First day of every month at 2 AM UTC
+# 2. Manual dispatch for testing
+on:
+  schedule:
+    - cron: '0 2 1 * *'  # 1st of every month at 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force training even if budget exceeded'
+        required: false
+        type: boolean
+        default: false
+      skip_deployment:
+        description: 'Skip automatic deployment'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  # Job 1: Check Budget
+  check-budget:
+    runs-on: ubuntu-latest
+    outputs:
+      can_proceed: ${{ steps.budget.outputs.can_proceed }}
+      remaining_budget: ${{ steps.budget.outputs.remaining }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          pip install pyyaml modal
+      
+      - name: Check Modal budget
+        id: budget
+        run: |
+          python - <<EOF
+          import sys
+          from src.monthly_orchestrator import BudgetTracker
+          
+          tracker = BudgetTracker(monthly_budget=30.0)
+          remaining = tracker.get_remaining_budget()
+          
+          print(f"Budget remaining: \${remaining:.2f}")
+          
+          # Check if we can afford minimum training
+          can_proceed = remaining >= 3.0 or "${{ github.event.inputs.force_run }}" == "true"
+          
+          print(f"::set-output name=can_proceed::{str(can_proceed).lower()}")
+          print(f"::set-output name=remaining::{remaining:.2f}")
+          
+          if not can_proceed:
+              print("❌ Insufficient budget for monthly training")
+              sys.exit(1)
+          EOF
+      
+      - name: Send budget notification
+        if: steps.budget.outputs.can_proceed == 'false'
+        uses: slackapi/slack-github-action@v1
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "⚠️ Monthly training cancelled: Insufficient budget",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Monthly Training Status*\n❌ Cancelled due to insufficient budget\nRemaining: $$${{ steps.budget.outputs.remaining }}"
+                  }
+                }
+              ]
+            }
+
+  # Job 2: Preprocessing (Local)
+  preprocess-data:
+    needs: check-budget
+    if: needs.check-budget.outputs.can_proceed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Cache datasets
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/huggingface
+            data/cache
+          key: datasets-${{ hashFiles('configs/monthly_schedule.yaml') }}
+          restore-keys: |
+            datasets-
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: PRE-TRAINING VALIDATION
+        run: |
+          echo "=================================="
+          echo "PRE-TRAINING VALIDATION"
+          echo "=================================="
+          echo "Testing pipeline before Modal GPU training..."
+          echo "This prevents wasting Modal credits on broken configurations."
+          echo ""
+          
+          python scripts/validate_pipeline.py --config configs/monthly_schedule.yaml
+          
+          if [ $? -ne 0 ]; then
+            echo ""
+            echo "❌ Validation failed! Check logs above."
+            echo "Fix issues before proceeding to Modal GPU training."
+            exit 1
+          fi
+          
+          echo ""
+          echo "✓ Validation passed! Safe to proceed."
+      
+      - name: Determine monthly dataset
+        id: dataset
+        run: |
+          python - <<EOF
+          from datetime import datetime
+          import yaml
+          
+          with open('configs/monthly_schedule.yaml', 'r') as f:
+              config = yaml.safe_load(f)
+          
+          month = datetime.now().month
+          month_key = f"month_{month}"
+          
+          datasets = config['schedule']['rotating_datasets']
+          monthly_dataset = datasets.get(month_key, datasets['month_1'])
+          
+          print(f"Monthly dataset: {monthly_dataset}")
+          print(f"::set-output name=dataset::{monthly_dataset}")
+          EOF
+      
+      - name: Preprocess datasets
+        run: |
+          # Preprocess all datasets needed for this month
+          for dataset in "roneneldan/TinyStories" "openwebtext" "${{ steps.dataset.outputs.dataset }}"; do
+            echo "Preprocessing: $dataset"
+            python main.py --config configs/config.yaml --preprocess-only
+          done
+      
+      - name: Upload preprocessed data
+        uses: actions/upload-artifact@v4
+        with:
+          name: preprocessed-data
+          path: |
+            data/processed/*.bin
+            data/processed/tokenizer.json
+            data/processed/meta.pkl
+          retention-days: 7
+
+  # Job 3: Training (Modal GPU)
+  train-monthly-model:
+    needs: [check-budget, preprocess-data]
+    runs-on: ubuntu-latest
+    outputs:
+      model_version: ${{ steps.train.outputs.version }}
+      total_cost: ${{ steps.train.outputs.cost }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install modal
+      
+      - name: Download preprocessed data
+        uses: actions/download-artifact@v4
+        with:
+          name: preprocessed-data
+          path: data/processed/
+      
+      - name: Configure Modal
+        run: |
+          modal token set \
+            --token-id ${{ secrets.MODAL_TOKEN_ID }} \
+            --token-secret ${{ secrets.MODAL_TOKEN_SECRET }}
+      
+      - name: Run monthly training
+        id: train
+        run: |
+          # Execute monthly training orchestrator
+          python - <<EOF
+          from src.monthly_orchestrator import MonthlyTrainingOrchestrator
+          from datetime import datetime
+          
+          orchestrator = MonthlyTrainingOrchestrator()
+          run = orchestrator.run_monthly_training()
+          
+          print(f"Run ID: {run.run_id}")
+          print(f"Status: {run.status}")
+          print(f"Total cost: \${run.total_actual_cost:.2f}")
+          
+          # Set outputs
+          version = f"v{datetime.now().year}.{datetime.now().month:02d}.{datetime.now().day:02d}"
+          print(f"::set-output name=version::{version}")
+          print(f"::set-output name=cost::{run.total_actual_cost:.2f}")
+          print(f"::set-output name=model_path::{run.final_model_path}")
+          
+          if run.status != 'completed':
+              print(f"❌ Training failed: {run.status}")
+              exit(1)
+          EOF
+      
+      - name: Download trained model
+        run: |
+          # Model already downloaded by orchestrator
+          ls -lh models/trained_models/
+      
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: monthly-model-${{ steps.train.outputs.version }}
+          path: |
+            models/trained_models/**/*.pt
+            models/trained_models/**/tokenizer.json
+          retention-days: 90  # Keep for 3 months
+      
+      - name: Generate training report
+        run: |
+          python - <<EOF
+          from src.monthly_orchestrator import MonthlyTrainingOrchestrator
+          import json
+          
+          orchestrator = MonthlyTrainingOrchestrator()
+          report = orchestrator.get_monthly_report()
+          
+          print(json.dumps(report, indent=2))
+          
+          with open('training_report.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          EOF
+      
+      - name: Upload training report
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-report
+          path: training_report.json
+
+  # Job 4: Build Docker Image
+  build-docker:
+    needs: train-monthly-model
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download model
+        uses: actions/download-artifact@v4
+        with:
+          name: monthly-model-${{ needs.train-monthly-model.outputs.model_version }}
+          path: models/best_model/
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.adaptive  # Use adaptive inference server
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/llm-inference:${{ needs.train-monthly-model.outputs.model_version }}
+            ${{ secrets.DOCKER_USERNAME }}/llm-inference:latest
+          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/llm-inference:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/llm-inference:buildcache,mode=max
+
+  # Job 5: Deploy to Kubernetes
+  deploy-to-kubernetes:
+    needs: [train-monthly-model, build-docker]
+    if: github.event.inputs.skip_deployment != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Configure kubectl
+        uses: azure/k8s-set-context@v3
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+      
+      - name: Update deployment
+        run: |
+          kubectl set image deployment/llm-inference-server \
+            inference-server=${{ secrets.DOCKER_USERNAME }}/llm-inference:${{ needs.train-monthly-model.outputs.model_version }} \
+            -n llm-inference
+          
+          kubectl rollout status deployment/llm-inference-server -n llm-inference
+      
+      - name: Run smoke tests
+        run: |
+          # Wait for rollout
+          kubectl wait --for=condition=available --timeout=300s \
+            deployment/llm-inference-server -n llm-inference
+          
+          # Get service URL
+          SERVICE_URL=$(kubectl get svc llm-inference-service -n llm-inference -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          
+          # Health check
+          curl -f http://${SERVICE_URL}/health || exit 1
+          
+          # Test generation
+          python scripts/test_inference.py --url http://${SERVICE_URL}
+
+  # Job 6: Notify Results
+  notify:
+    needs: [train-monthly-model, build-docker, deploy-to-kubernetes]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download training report
+        uses: actions/download-artifact@v4
+        with:
+          name: training-report
+      
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v1
+        with:
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          payload: |
+            {
+              "text": "🚀 Monthly Training Completed",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Monthly Model Training - ${{ needs.train-monthly-model.outputs.model_version }}*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Status:*\n✅ Success"},
+                    {"type": "mrkdwn", "text": "*Cost:*\n$$${{ needs.train-monthly-model.outputs.total_cost }}"},
+                    {"type": "mrkdwn", "text": "*Training:*\n${{ needs.train-monthly-model.result }}"},
+                    {"type": "mrkdwn", "text": "*Deployment:*\n${{ needs.deploy-to-kubernetes.result }}"}
+                  ]
+                }
+              ]
+            }
+      
+      - name: Send email notification
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "Monthly Model Training - ${{ needs.train-monthly-model.outputs.model_version }}"
+          body: |
+            Monthly training completed successfully!
+            
+            Version: ${{ needs.train-monthly-model.outputs.model_version }}
+            Cost: $$${{ needs.train-monthly-model.outputs.total_cost }}
+            Status: ${{ needs.train-monthly-model.result }}
+            
+            View full report in GitHub Actions.
+          to: your-email@example.com
+          from: LLM Training Pipeline
+
+  # Job 7: Cleanup Old Models
+  cleanup:
+    needs: deploy-to-kubernetes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Cleanup old models
+        run: |
+          python - <<EOF
+          from pathlib import Path
+          import shutil
+          from datetime import datetime, timedelta
+          
+          models_dir = Path('models/trained_models')
+          
+          # Keep last 3 months
+          cutoff_date = datetime.now() - timedelta(days=90)
+          
+          for model_dir in models_dir.iterdir():
+              if model_dir.is_dir():
+                  mod_time = datetime.fromtimestamp(model_dir.stat().st_mtime)
+                  if mod_time < cutoff_date:
+                      print(f"Removing old model: {model_dir}")
+                      shutil.rmtree(model_dir)
+          EOF

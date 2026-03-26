@@ -1,0 +1,18 @@
+{
+  "dataset_name": "roneneldan/TinyStories",
+  "dataset_hash": "9004287a4bd039bd",
+  "split_ratios": {
+    "train": 0.9,
+    "validation": 0.05,
+    "test": 0.05
+  },
+  "max_seq_length": 256,
+  "vocab_size": 10000,
+  "tokenizer_trained": true,
+  "tokenizer_hash": "9004287a4bd039bd",
+  "data_tokenized": true,
+  "train_samples": 450,
+  "val_samples": 25,
+  "test_samples": 25,
+  "completed": true
+}

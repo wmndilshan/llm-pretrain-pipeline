@@ -476,9 +476,12 @@ class EnhancedGPTModel(nn.Module):
         # Calculate loss
         loss = None
         if targets is not None:
+            # Next-token prediction: token t predicts token t+1.
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_targets = targets[:, 1:].contiguous()
             loss = F.cross_entropy(
-                logits.view(-1, self.config.vocab_size),
-                targets.view(-1),
+                shift_logits.view(-1, self.config.vocab_size),
+                shift_targets.view(-1),
                 ignore_index=-1
             )
 

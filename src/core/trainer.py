@@ -15,7 +15,7 @@ Implements:
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import autocast, GradScaler
+from contextlib import nullcontext
 from pathlib import Path
 
 # Optional tensorboard import
@@ -270,7 +270,7 @@ class Trainer:
 
         # Setup mixed precision
         if self.config['hardware']['mixed_precision'] and self.device.type == 'cuda':
-            self.scaler = GradScaler()
+            self.scaler = torch.amp.GradScaler("cuda")
             print("   Mixed precision enabled")
         else:
             self.scaler = None
@@ -350,7 +350,7 @@ class Trainer:
 
         # Forward pass
         if self.scaler is not None:
-            with autocast():
+            with self._autocast_context():
                 _, loss, _ = self.model(input_ids, targets=labels)
         else:
             _, loss, _ = self.model(input_ids, targets=labels)
@@ -414,7 +414,7 @@ class Trainer:
 
             # Forward pass
             if self.scaler is not None:
-                with autocast():
+                with self._autocast_context():
                     _, loss, _ = self.model(input_ids, targets=labels)
             else:
                 _, loss, _ = self.model(input_ids, targets=labels)
@@ -526,7 +526,7 @@ class Trainer:
             labels = batch['labels'].to(self.device)
 
             if self.scaler is not None:
-                with autocast():
+                with self._autocast_context():
                     _, loss, _ = self.model(input_ids, targets=labels)
             else:
                 _, loss, _ = self.model(input_ids, targets=labels)
@@ -558,6 +558,12 @@ class Trainer:
             scheduler=self.scheduler,
             metadata=metadata
         )
+
+    def _autocast_context(self):
+        """Return the correct AMP autocast context for the active device."""
+        if self.scaler is None:
+            return nullcontext()
+        return torch.amp.autocast(device_type="cuda")
 
     def _cleanup_after_training(self):
         """Cleanup after successful training completion."""

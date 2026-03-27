@@ -290,10 +290,12 @@ class GPTModel(nn.Module):
         # Calculate loss if targets provided
         loss = None
         if targets is not None:
-            # Flatten for cross-entropy
+            # Next-token prediction: token t predicts token t+1.
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_targets = targets[:, 1:].contiguous()
             loss = F.cross_entropy(
-                logits.view(-1, self.vocab_size),
-                targets.view(-1),
+                shift_logits.view(-1, self.vocab_size),
+                shift_targets.view(-1),
                 ignore_index=-1  # Ignore padding
             )
 

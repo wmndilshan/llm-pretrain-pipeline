@@ -32,6 +32,7 @@ import modal
 import numpy as np
 
 from ..utils.config import load_yaml_config
+from .checkpoint import CheckpointManager
 
 # Modal app definition
 app = modal.App("llm-training-v2")
@@ -185,8 +186,10 @@ def _run_training_job(
                 "phase": phase_name,
                 "metadata": {
                     "step": step,
+                    "epoch": trainer.current_epoch,
                     "train_loss": float(train_loss),
                     "val_loss": float(val_loss) if val_loss is not None else None,
+                    "learning_rate": float(trainer.optimizer.param_groups[0]["lr"]),
                     "phase": phase_name,
                     "dataset_name": config.get("dataset", {}).get("name"),
                     "dataset_hash": config.get("dataset", {}).get("processed_hash"),
@@ -207,6 +210,14 @@ def _run_training_job(
 
             print(f"[INFO] Loading checkpoint: {previous_checkpoint}")
             checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
+            compatible, reason = CheckpointManager._state_dict_compatible(
+                trainer.model,
+                checkpoint.get("model_state_dict", {})
+            )
+            if not compatible:
+                raise RuntimeError(
+                    f"Resume checkpoint is incompatible with the current model architecture: {reason}"
+                )
             trainer.model.load_state_dict(checkpoint["model_state_dict"])
 
             optimizer_state = checkpoint.get("optimizer_state_dict")

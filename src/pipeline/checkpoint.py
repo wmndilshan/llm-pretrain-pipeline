@@ -13,7 +13,7 @@ import torch
 import json
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
 from dataclasses import dataclass, asdict
 
 
@@ -169,58 +169,76 @@ class CheckpointManager:
         Returns:
             CheckpointMetadata if successful, None otherwise
         """
+        candidate_paths: List[Path]
         if checkpoint_path is None:
-            checkpoint_path = self._find_latest_checkpoint()
+            candidate_paths = self._list_checkpoints_by_step()
+        else:
+            candidate_paths = [Path(checkpoint_path)]
 
-        if checkpoint_path is None:
+        if not candidate_paths:
             return None
 
-        checkpoint_path = Path(checkpoint_path)
+        for candidate_path in candidate_paths:
+            if not candidate_path.exists():
+                print(f"Warning: Checkpoint not found: {candidate_path}")
+                if checkpoint_path is not None:
+                    return None
+                continue
 
-        if not checkpoint_path.exists():
-            print(f"Warning: Checkpoint not found: {checkpoint_path}")
-            return None
+            print(f"Loading checkpoint: {candidate_path.name}")
 
-        print(f"Loading checkpoint: {checkpoint_path.name}")
+            try:
+                checkpoint = torch.load(candidate_path, map_location=device)
+            except Exception as e:
+                print(f"Failed to read checkpoint {candidate_path.name}: {e}")
+                if checkpoint_path is not None:
+                    return None
+                continue
 
-        try:
-            # Load checkpoint
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            compatible, reason = self._state_dict_compatible(
+                model,
+                checkpoint.get('model_state_dict', {})
+            )
+            if not compatible:
+                print(f"Skipping incompatible checkpoint {candidate_path.name}: {reason}")
+                if checkpoint_path is not None:
+                    return None
+                continue
 
-            # Load model weights
-            model.load_state_dict(checkpoint['model_state_dict'])
+            try:
+                model.load_state_dict(checkpoint['model_state_dict'])
 
-            # Load optimizer state
-            if optimizer is not None and 'optimizer_state_dict' in checkpoint:
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                if optimizer is not None and 'optimizer_state_dict' in checkpoint:
+                    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-            # Load scheduler state
-            if scheduler is not None and 'scheduler_state_dict' in checkpoint:
-                if checkpoint['scheduler_state_dict'] is not None:
-                    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                if scheduler is not None and 'scheduler_state_dict' in checkpoint:
+                    if checkpoint['scheduler_state_dict'] is not None:
+                        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
-            # Load metadata
-            metadata = CheckpointMetadata.from_dict(checkpoint['metadata'])
-            if metadata.val_loss is not None:
-                self.best_val_loss = metadata.val_loss
+                metadata = self._metadata_from_checkpoint(checkpoint)
+                if metadata.val_loss is not None:
+                    self.best_val_loss = metadata.val_loss
 
-            print(f"Loaded checkpoint from step {metadata.step}")
+                self.latest_checkpoint_path = candidate_path
+                print(f"Loaded checkpoint from step {metadata.step}")
+                return metadata
 
-            return metadata
+            except Exception as e:
+                print(f"Failed to load checkpoint {candidate_path.name}: {e}")
+                if checkpoint_path is not None:
+                    return None
 
-        except Exception as e:
-            print(f"Failed to load checkpoint: {e}")
-            return None
+        return None
 
     def _find_latest_checkpoint(self) -> Optional[Path]:
         """Find the most recent checkpoint by step number."""
+        checkpoints = self._list_checkpoints_by_step()
+        return checkpoints[0] if checkpoints else None
+
+    def _list_checkpoints_by_step(self) -> List[Path]:
+        """List checkpoints sorted by newest step first."""
         checkpoints = list(self.checkpoint_dir.glob("checkpoint_step_*.pt"))
-
-        if not checkpoints:
-            return None
-
-        # Extract step numbers and sort
-        checkpoint_steps = []
+        checkpoint_steps: List[Tuple[int, Path]] = []
         for ckpt in checkpoints:
             try:
                 step = int(ckpt.stem.split('_')[-1])
@@ -228,12 +246,69 @@ class CheckpointManager:
             except ValueError:
                 continue
 
-        if not checkpoint_steps:
-            return None
+        checkpoint_steps.sort(key=lambda item: item[0], reverse=True)
+        return [ckpt for _, ckpt in checkpoint_steps]
 
-        # Return checkpoint with highest step
-        latest = max(checkpoint_steps, key=lambda x: x[0])
-        return latest[1]
+    @staticmethod
+    def _state_dict_compatible(
+        model: torch.nn.Module,
+        checkpoint_state_dict: Dict[str, Any]
+    ) -> Tuple[bool, str]:
+        """Check whether a checkpoint state dict matches the current model."""
+        model_state = model.state_dict()
+
+        missing_keys = [key for key in model_state.keys() if key not in checkpoint_state_dict]
+        unexpected_keys = [key for key in checkpoint_state_dict.keys() if key not in model_state]
+        mismatched_shapes = []
+
+        for key, value in checkpoint_state_dict.items():
+            if key not in model_state:
+                continue
+            if tuple(model_state[key].shape) != tuple(value.shape):
+                mismatched_shapes.append(
+                    f"{key}: checkpoint {tuple(value.shape)} vs current {tuple(model_state[key].shape)}"
+                )
+
+        if not missing_keys and not unexpected_keys and not mismatched_shapes:
+            return True, "compatible"
+
+        reasons = []
+        if missing_keys:
+            reasons.append(f"{len(missing_keys)} missing key(s)")
+        if unexpected_keys:
+            reasons.append(f"{len(unexpected_keys)} unexpected key(s)")
+        if mismatched_shapes:
+            reasons.append(f"{len(mismatched_shapes)} tensor shape mismatch(es)")
+
+        detail_parts = []
+        if missing_keys:
+            detail_parts.append(f"missing={missing_keys[:3]}")
+        if unexpected_keys:
+            detail_parts.append(f"unexpected={unexpected_keys[:3]}")
+        if mismatched_shapes:
+            detail_parts.append(f"shape={mismatched_shapes[:2]}")
+
+        return False, f"{', '.join(reasons)}; {'; '.join(detail_parts)}"
+
+    @staticmethod
+    def _metadata_from_checkpoint(checkpoint: Dict[str, Any]) -> CheckpointMetadata:
+        """Normalize checkpoint metadata from local and Modal save formats."""
+        raw_metadata = checkpoint.get('metadata', {}) or {}
+        return CheckpointMetadata(
+            step=int(raw_metadata.get('step', checkpoint.get('step', 0))),
+            epoch=float(raw_metadata.get('epoch', checkpoint.get('epoch', 0.0))),
+            train_loss=float(raw_metadata.get('train_loss', 0.0)),
+            val_loss=float(raw_metadata['val_loss']) if raw_metadata.get('val_loss') is not None else None,
+            learning_rate=float(
+                raw_metadata.get(
+                    'learning_rate',
+                    checkpoint.get('learning_rate', 0.0),
+                )
+            ),
+            timestamp=raw_metadata.get('timestamp', ''),
+            dataset_hash=str(raw_metadata.get('dataset_hash', '')),
+            is_best=bool(raw_metadata.get('is_best', False)),
+        )
 
     def _save_best_model(self, checkpoint_path: Path):
         """Save a copy of the best model."""

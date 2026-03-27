@@ -98,6 +98,8 @@ class DataPreprocessor:
         self.vocab_size = vocab_size
         self.max_samples = max_samples  # limit for fast first run (None = full)
         self.tokenizer_backend = tokenizer_backend
+        self.split_seed = 42
+        self.split_strategy_version = 2
 
         # Create directories
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -121,7 +123,10 @@ class DataPreprocessor:
 
         H(dataset_name, split_ratios, max_seq_length, vocab_size)
         """
-        config_str = f"{self.dataset_name}_{self.split_ratios}_{self.max_seq_length}_{self.vocab_size}_{self.max_samples}"
+        config_str = (
+            f"{self.dataset_name}_{self.split_ratios}_{self.max_seq_length}_"
+            f"{self.vocab_size}_{self.max_samples}_{self.split_seed}_{self.split_strategy_version}"
+        )
         return hashlib.sha256(config_str.encode()).hexdigest()[:16]
 
     def _load_or_create_state(self) -> PreprocessingState:
@@ -410,6 +415,12 @@ class DataPreprocessor:
 
         # Convert to numpy array
         all_token_ids = np.array(all_ids, dtype=np.int32)
+
+        # Shuffle deterministically before splitting so validation is representative
+        # and preprocessing remains reproducible across runs.
+        rng = np.random.default_rng(self.split_seed)
+        permutation = rng.permutation(len(all_token_ids))
+        all_token_ids = all_token_ids[permutation]
 
         # Calculate split indices
         n = len(all_token_ids)
